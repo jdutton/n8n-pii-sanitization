@@ -1,0 +1,18 @@
+{
+  "name": "n8n-pii-sanitization-tests",
+  "version": "1.0.0",
+  "description": "Test suite for n8n PII sanitization workflow",
+  "scripts": {
+    "test": "tsx test-runner.ts",
+    "test:file": "tsx test-runner.ts"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}

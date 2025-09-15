@@ -68,9 +68,9 @@ curl -X POST http://localhost:5678/webhook-test/chat \
 
 ### Installation
 
-1. **Clone or create project directory**
+1. **Clone git repo and cd to project **
    ```bash
-   mkdir n8n-experiment && cd n8n-experiment
+   git clone git@github.com:jdutton/n8n-pii-sanitization.git && cd n8n-pii-sanitization
    ```
 
 2. **Start n8n**
@@ -83,16 +83,71 @@ curl -X POST http://localhost:5678/webhook-test/chat \
    - Complete initial setup
 
 4. **Import workflow**
-   - Create new workflow in n8n UI
-   - Configure LangChain OpenAI node with your API key
-   - Set up webhook endpoint
-   - Configure PII detection prompt
+   - In n8n UI, click "Import from File" and select `pii-sanitization-workflow.json`
+   - Configure OpenAI node with your API key
+   - Activate the workflow
 
-5. **Test the workflow**
+5. **Install test dependencies**
    ```bash
+   npm install
+   ```
+
+6. **Test the workflow**
+   ```bash
+   # Basic shell test
    chmod +x test-pii.sh
    ./test-pii.sh
+
+   # TypeScript test suite (recommended)
+   npx tsx test-runner.ts testdata/basic-pii.yaml
    ```
+
+## Test Suite
+
+This project includes a comprehensive TypeScript test suite for validating the PII sanitization workflow.
+
+### Test Structure
+
+Tests are defined as YAML files in the `testdata/` directory:
+
+```yaml
+name: "Basic PII Detection Test"
+description: "Test detection and tokenization of common PII types"
+
+input:
+  message: "Hi, I am John Smith, my email is john.smith@company.com..."
+
+expected:
+  status: "success"
+  sanitized_text: "Hi, I am [Person1], my email is [Email1]..."
+  pii_mapping:
+    "[Person1]": "John Smith"
+    "[Email1]": "john.smith@company.com"
+
+validation:
+  required_fields: ["status", "sanitized_text", "session_id", "pii_mapping"]
+  pii_tokens: ["[Person1]", "[Email1]", "[Address1]", "[Phone1]", "[ID1]"]
+```
+
+### Running Tests
+
+```bash
+# Run a specific test file
+npx tsx test-runner.ts testdata/basic-pii.yaml
+
+# Run all tests (when multiple test files exist)
+npm test
+```
+
+### Test Validation
+
+The test runner validates:
+- ✅ HTTP response structure and status codes
+- ✅ Required JSON fields presence
+- ✅ PII token detection accuracy
+- ✅ Original input preservation
+- ✅ Session ID and timestamp formats
+- ✅ Expected vs actual PII mappings
 
 ## Enterprise Considerations
 
@@ -171,7 +226,3 @@ This is an experimental project for exploring agentic AI workflows. Key areas fo
 ## License
 
 Experimental project - use at your own risk. Not intended for production use without proper security implementations.
-
----
-
-*Built with n8n 1.110.1 and OpenAI GPT-5-mini*
