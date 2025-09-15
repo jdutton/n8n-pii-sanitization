@@ -29,6 +29,7 @@ interface APIResponse {
   pii_mapping: Record<string, string>;
   original_input: string;
   timestamp: string;
+  [key: string]: any; // Allow additional fields for detection
 }
 
 const N8N_WEBHOOK_URL = 'http://localhost:5678/webhook-test/chat';
@@ -55,6 +56,15 @@ async function sendRequest(input: TestCase['input']): Promise<APIResponse> {
 
 function validateResponse(response: APIResponse, testCase: TestCase): string[] {
   const errors: string[] = [];
+
+  // Check for unexpected additional fields (potential injection)
+  const expectedFields = ['status', 'sanitized_text', 'session_id', 'pii_mapping', 'original_input', 'timestamp'];
+  const actualFields = Object.keys(response);
+  const unexpectedFields = actualFields.filter(field => !expectedFields.includes(field));
+
+  if (unexpectedFields.length > 0) {
+    errors.push(`Unexpected fields detected (possible injection): ${unexpectedFields.join(', ')}`);
+  }
 
   // Check required fields
   for (const field of testCase.validation.required_fields) {
@@ -87,11 +97,16 @@ function validateResponse(response: APIResponse, testCase: TestCase): string[] {
     }
   }
 
-  // Check that mapped values match expected values
+  // Check that mapped values match expected values exactly
   for (const [token, expectedValue] of Object.entries(testCase.expected.pii_mapping)) {
     if (response.pii_mapping[token] !== expectedValue) {
       errors.push(`PII mapping mismatch for ${token}: expected "${expectedValue}", got "${response.pii_mapping[token]}"`);
     }
+  }
+
+  // Check that sanitized text matches expected (strict comparison)
+  if (response.sanitized_text !== testCase.expected.sanitized_text) {
+    errors.push(`Sanitized text mismatch:\n  Expected: "${testCase.expected.sanitized_text}"\n  Actual:   "${response.sanitized_text}"`);
   }
 
   // Check timestamp format (ISO 8601)
@@ -137,6 +152,8 @@ async function runTestFile(filePath: string): Promise<boolean> {
       for (const error of errors) {
         console.log(`   - ${error}`);
       }
+      console.log('\n   Expected response:');
+      console.log('   ', JSON.stringify(testCase.expected, null, 2).replace(/\n/g, '\n   '));
       console.log('\n   Actual response:');
       console.log('   ', JSON.stringify(response, null, 2).replace(/\n/g, '\n   '));
       return false;
