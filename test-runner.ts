@@ -5,7 +5,6 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 
 interface TestCase {
-  name: string;
   description: string;
   input: {
     message: string;
@@ -14,7 +13,6 @@ interface TestCase {
     status: string;
     sanitized_text: string;
     pii_mapping: Record<string, string>;
-    original_input: string;
   };
   validation: {
     required_fields: string[];
@@ -32,11 +30,12 @@ interface APIResponse {
   [key: string]: any; // Allow additional fields for detection
 }
 
-const N8N_WEBHOOK_URL = 'http://localhost:5678/webhook-test/chat';
+const TEST_URL = 'http://localhost:5678/webhook-test/chat';
+const PROD_URL = 'http://localhost:5678/webhook/chat';
 
-async function sendRequest(input: TestCase['input']): Promise<APIResponse> {
+async function sendRequest(input: TestCase['input'], webhookUrl: string): Promise<APIResponse> {
   try {
-    const response = await fetch(N8N_WEBHOOK_URL, {
+    const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -78,8 +77,8 @@ function validateResponse(response: APIResponse, testCase: TestCase): string[] {
     errors.push(`Expected status "${testCase.expected.status}", got "${response.status}"`);
   }
 
-  // Check original input matches
-  if (response.original_input !== testCase.expected.original_input) {
+  // Check original input matches (inject from input.message)
+  if (response.original_input !== testCase.input.message) {
     errors.push(`Original input mismatch`);
   }
 
@@ -122,7 +121,7 @@ function validateResponse(response: APIResponse, testCase: TestCase): string[] {
   return errors;
 }
 
-async function runTestFile(filePath: string): Promise<boolean> {
+async function runTestFile(filePath: string, webhookUrl: string): Promise<boolean> {
   console.log(`\n🧪 Running test: ${path.basename(filePath)}`);
   console.log('='.repeat(50));
 
@@ -130,11 +129,11 @@ async function runTestFile(filePath: string): Promise<boolean> {
     const fileContent = fs.readFileSync(filePath, 'utf8');
     const testCase = yaml.load(fileContent) as TestCase;
 
-    console.log(`📝 ${testCase.name}`);
+    console.log(`📝 ${path.basename(filePath, '.yaml')}`);
     console.log(`📄 ${testCase.description}`);
 
     console.log('\n📤 Sending request...');
-    const response = await sendRequest(testCase.input);
+    const response = await sendRequest(testCase.input, webhookUrl);
 
     console.log('📥 Response received');
     console.log('🔍 Validating response...');
@@ -153,7 +152,11 @@ async function runTestFile(filePath: string): Promise<boolean> {
         console.log(`   - ${error}`);
       }
       console.log('\n   Expected response:');
-      console.log('   ', JSON.stringify(testCase.expected, null, 2).replace(/\n/g, '\n   '));
+      const expectedWithOriginalInput = {
+        ...testCase.expected,
+        original_input: testCase.input.message
+      };
+      console.log('   ', JSON.stringify(expectedWithOriginalInput, null, 2).replace(/\n/g, '\n   '));
       console.log('\n   Actual response:');
       console.log('   ', JSON.stringify(response, null, 2).replace(/\n/g, '\n   '));
       return false;
@@ -169,12 +172,26 @@ async function main() {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    console.log('Usage: tsx test-runner.ts <test-file.yaml>');
+    console.log('Usage: tsx test-runner.ts [--prod] <test-file.yaml>');
     console.log('Example: tsx test-runner.ts testdata/basic-pii.yaml');
+    console.log('Example: tsx test-runner.ts --prod testdata/basic-pii.yaml');
     process.exit(1);
   }
 
-  const testFile = args[0];
+  let useProductionUrl = false;
+  let testFile = args[0];
+
+  // Check for --prod flag
+  if (args[0] === '--prod') {
+    useProductionUrl = true;
+    testFile = args[1];
+    if (!testFile) {
+      console.error('❌ Test file required after --prod flag');
+      process.exit(1);
+    }
+  }
+
+  const webhookUrl = useProductionUrl ? PROD_URL : TEST_URL;
 
   if (!fs.existsSync(testFile)) {
     console.error(`❌ Test file not found: ${testFile}`);
@@ -182,9 +199,9 @@ async function main() {
   }
 
   console.log('🚀 n8n PII Sanitization Test Runner');
-  console.log(`🌐 Testing against: ${N8N_WEBHOOK_URL}`);
+  console.log(`🌐 Testing against: ${webhookUrl} ${useProductionUrl ? '(PRODUCTION)' : '(TEST)'}`);
 
-  const success = await runTestFile(testFile);
+  const success = await runTestFile(testFile, webhookUrl);
 
   if (success) {
     console.log('\n🎉 All tests passed!');

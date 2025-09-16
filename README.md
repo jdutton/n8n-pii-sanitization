@@ -94,12 +94,11 @@ curl -X POST http://localhost:5678/webhook-test/chat \
 
 6. **Test the workflow**
    ```bash
-   # Basic shell test
-   chmod +x test-pii.sh
-   ./test-pii.sh
-
-   # TypeScript test suite (recommended)
+   # TypeScript test suite (test endpoint)
    npx tsx test-runner.ts testdata/basic-pii.yaml
+
+   # Test against production endpoint
+   npx tsx test-runner.ts --prod testdata/basic-pii.yaml
    ```
 
 ## Test Suite
@@ -132,8 +131,11 @@ validation:
 ### Running Tests
 
 ```bash
-# Run a specific test file
+# Run a specific test file (test endpoint - default)
 npx tsx test-runner.ts testdata/basic-pii.yaml
+
+# Run against production endpoint
+npx tsx test-runner.ts --prod testdata/basic-pii.yaml
 
 # Run all tests (when multiple test files exist)
 npm test

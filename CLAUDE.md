@@ -15,7 +15,10 @@ npx n8n start
 ### Testing
 ```bash
 # Test the PII sanitization workflow (requires n8n to be running and workflow activated)
-./test-pii.sh
+npx tsx test-runner.ts testdata/basic-pii.yaml
+
+# Test against production webhook endpoint
+npx tsx test-runner.ts --prod testdata/basic-pii.yaml
 ```
 
 ## Architecture Overview

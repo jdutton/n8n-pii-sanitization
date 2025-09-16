@@ -1,0 +1,31 @@
+description: "Test detection and tokenization of common PII types"
+
+input:
+  message: "I am Bob McGibblets and I am looking for some help for my son Tim. We live at 87 Uptown Ave in Mineapolis, Minnesota 99999-1234. My email is bobby@noreply.com and my son's email is timmy@noreply.org. My phone is 888-555-9876. Please contact me so I can understand how to get Timmy some help, thank you."
+
+expected:
+  status: "success"
+  sanitized_text: "I am [Person1] and I am looking for some help for my son [Person2]. We live at [Address1]. My email is [Email1] and my son's email is [Email2]. My phone is [Phone1]. Please contact me so I can understand how to get [Person2] some help, thank you."
+  pii_mapping:
+    "[Person1]": "Bob McGibblets"
+    "[Person2]": "Tim"
+    "[Email1]": "bobby@noreply.com"
+    "[Email2]": "timmy@noreply.org"
+    "[Address1]": "87 Uptown Ave in Mineapolis, Minnesota 99999-1234"
+    "[Phone1]": "888-555-9876"
+
+validation:
+  required_fields:
+    - status
+    - sanitized_text
+    - session_id
+    - pii_mapping
+    - original_input
+    - timestamp
+  pii_tokens:
+    - "[Person1]"
+    - "[Person2]"
+    - "[Email1]"
+    - "[Email2]"
+    - "[Address1]"
+    - "[Phone1]"
