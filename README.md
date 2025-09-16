@@ -17,27 +17,29 @@ Webhook Input → AI PII Detection → Data Processing → JSON Response
 ## Workflow Components
 
 1. **Webhook Trigger** - Receives POST requests with message data
-2. **LangChain OpenAI Node** - Uses GPT-5-mini for PII detection and tokenization
+2. **LangChain OpenAI Node** - Uses GPT-5 for PII detection and tokenization
 3. **Code Node** - Processes AI response and generates session mapping
 4. **Response Node** - Returns structured JSON with sanitized text and PII mapping
 
 ## PII Detection Capabilities
 
-The AI model detects and tokenizes:
+The AI model detects and tokenizes PII using person-centric identifiers:
 - **Names**: `[Person1]`, `[Person2]`, etc.
-- **Email addresses**: `[Email1]`, `[Email2]`, etc.
-- **Physical addresses**: `[Address1]`, `[Address2]`, etc.
-- **Phone numbers**: `[Phone1]`, `[Phone2]`, etc.
-- **SSN/ID numbers**: `[ID1]`, `[ID2]`, etc.
+- **Email addresses**: `[Person1:email1]`, `[Person2:email1]`, etc.
+- **Physical addresses**: `[Person1:address1]`, `[Person1:address2]`, etc.
+- **Phone numbers**: `[Person1:phone1]`, `[Person1:phone2]`, etc.
+- **SSN/ID numbers**: `[Person1:id1]`, `[Person1:id2]`, etc.
+
+Each person gets a sequential identifier (Person1, Person2) with their PII organized in a structured person object including metadata, relationships, and confidence scores.
 
 ## API Usage
 
 ### Request
 ```bash
-curl -X POST http://localhost:5678/webhook-test/chat \
+curl -X POST http://localhost:5678/webhook/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "Hi, I am John Smith, my email is john.smith@company.com and I live at 123 Main Street, New York, NY 10001. My phone is 555-123-4567 and my SSN is 123-45-6789."
+    "message": "Hi, I am John Smith, my email is john.smith@company.com and I live at 123 Main Street, New York, NY 10001. My phone is 555-123-4567."
   }'
 ```
 
@@ -45,17 +47,38 @@ curl -X POST http://localhost:5678/webhook-test/chat \
 ```json
 {
   "status": "success",
-  "sanitized_text": "Hi, I am [Person1], my email is [Email1] and I live at [Address1]. My phone is [Phone1] and my SSN is [ID1].",
-  "session_id": "1_1726419234567",
+  "sanitized_text": "Hi, I am [Person1], my email is [Person1:email1] and I live at [Person1:address1]. My phone is [Person1:phone1].",
+  "session_id": "1_1758062819430",
+  "persons": {
+    "Person1": {
+      "primary_name": "John Smith",
+      "aliases": [],
+      "emails": ["john.smith@company.com"],
+      "phones": ["555-123-4567"],
+      "addresses": ["123 Main Street, New York, NY 10001"],
+      "relationships": {},
+      "metadata": {
+        "confidence_score": 0.95,
+        "first_seen": "2025-09-16T22:00:00.000Z",
+        "last_seen": "2025-09-16T22:00:00.000Z",
+        "session_count": 1
+      }
+    }
+  },
+  "token_map": {
+    "[Person1]": "primary_name",
+    "[Person1:email1]": "emails[0]",
+    "[Person1:phone1]": "phones[0]",
+    "[Person1:address1]": "addresses[0]"
+  },
   "pii_mapping": {
     "[Person1]": "John Smith",
-    "[Email1]": "john.smith@company.com", 
-    "[Address1]": "123 Main Street, New York, NY 10001",
-    "[Phone1]": "555-123-4567",
-    "[ID1]": "123-45-6789"
+    "[Person1:email1]": "john.smith@company.com",
+    "[Person1:phone1]": "555-123-4567",
+    "[Person1:address1]": "123 Main Street, New York, NY 10001"
   },
-  "original_input": "Hi, I am John Smith...",
-  "timestamp": "2025-09-15T00:45:00.000Z"
+  "original_input": "Hi, I am John Smith, my email is john.smith@company.com and I live at 123 Main Street, New York, NY 10001. My phone is 555-123-4567.",
+  "timestamp": "2025-09-16T22:46:59.430Z"
 }
 ```
 
@@ -94,11 +117,17 @@ curl -X POST http://localhost:5678/webhook-test/chat \
 
 6. **Test the workflow**
    ```bash
-   # TypeScript test suite (test endpoint)
+   # Run all tests (production endpoint - default)
+   npx tsx test-runner.ts
+
+   # Run all tests against test endpoint
+   npx tsx test-runner.ts --test
+
+   # Run specific test (production endpoint)
    npx tsx test-runner.ts testdata/basic-pii.yaml
 
-   # Test against production endpoint
-   npx tsx test-runner.ts --prod testdata/basic-pii.yaml
+   # Run specific test against test endpoint
+   npx tsx test-runner.ts --test testdata/basic-pii.yaml
    ```
 
 ## Test Suite
@@ -110,7 +139,6 @@ This project includes a comprehensive TypeScript test suite for validating the P
 Tests are defined as YAML files in the `testdata/` directory:
 
 ```yaml
-name: "Basic PII Detection Test"
 description: "Test detection and tokenization of common PII types"
 
 input:
@@ -118,27 +146,44 @@ input:
 
 expected:
   status: "success"
-  sanitized_text: "Hi, I am [Person1], my email is [Email1]..."
-  pii_mapping:
-    "[Person1]": "John Smith"
-    "[Email1]": "john.smith@company.com"
+  sanitized_text: "Hi, I am [Person1], my email is [Person1:email1]..."
+  persons:
+    Person1:
+      primary_name: "John Smith"
+      aliases: []
+      emails: ["john.smith@company.com"]
+      phones: ["555-123-4567"]
+      addresses: ["123 Main Street, New York, NY 10001"]
+      relationships: {}
+      metadata:
+        confidence_score: 0.95
+        session_count: 1
+  token_map:
+    "[Person1]": "primary_name"
+    "[Person1:email1]": "emails[0]"
+    "[Person1:phone1]": "phones[0]"
+    "[Person1:address1]": "addresses[0]"
 
 validation:
-  required_fields: ["status", "sanitized_text", "session_id", "pii_mapping"]
-  pii_tokens: ["[Person1]", "[Email1]", "[Address1]", "[Phone1]", "[ID1]"]
+  required_fields: ["status", "sanitized_text", "session_id", "persons", "token_map", "pii_mapping"]
+  person_tokens: ["Person1"]
+  pii_attributes: ["primary_name", "emails", "phones", "addresses"]
 ```
 
 ### Running Tests
 
 ```bash
-# Run a specific test file (test endpoint - default)
+# Run all tests (production endpoint - default)
+npx tsx test-runner.ts
+
+# Run all tests against test endpoint
+npx tsx test-runner.ts --test
+
+# Run a specific test file (production endpoint)
 npx tsx test-runner.ts testdata/basic-pii.yaml
 
-# Run against production endpoint
-npx tsx test-runner.ts --prod testdata/basic-pii.yaml
-
-# Run all tests (when multiple test files exist)
-npm test
+# Run specific test against test endpoint
+npx tsx test-runner.ts --test testdata/basic-pii.yaml
 ```
 
 ### Test Validation
@@ -146,10 +191,13 @@ npm test
 The test runner validates:
 - ✅ HTTP response structure and status codes
 - ✅ Required JSON fields presence
-- ✅ PII token detection accuracy
+- ✅ Person token detection accuracy
+- ✅ Person schema structure and attributes
+- ✅ Token mapping correctness
 - ✅ Original input preservation
 - ✅ Session ID and timestamp formats
 - ✅ Expected vs actual PII mappings
+- ✅ Protection against prompt injection attacks
 
 ## Enterprise Considerations
 
@@ -181,40 +229,42 @@ This PII sanitization workflow demonstrates several key patterns for building ag
 4. **Error handling**: Graceful degradation when AI processing fails
 5. **Structured outputs**: Consistent JSON responses for integration
 
-## Next Steps
-
-### Immediate Enhancements
-- [ ] Add support for custom PII patterns
-- [ ] Implement confidence scoring for detections
-- [ ] Add batch processing capabilities
-- [ ] Create PII mapping reversal endpoint
-
-### Advanced Features
-- [ ] Multi-language PII detection
-- [ ] Industry-specific detection rules
-- [ ] Real-time PII monitoring dashboard
-- [ ] Integration with data governance tools
-
-### Agentic Workflow Extensions
-- [ ] Chain multiple AI models for complex analysis
-- [ ] Add conditional logic based on PII risk levels
-- [ ] Implement feedback loops for detection improvement
-- [ ] Create autonomous data classification workflows
-
 ## Technical Architecture
 
 ### Node Configuration
-- **Model**: GPT-5-mini (latest OpenAI model)
+- **Model**: GPT-5 (latest OpenAI model)
 - **Temperature**: 0.1 (consistent, deterministic responses)
-- **Response format**: Structured JSON output
+- **Response format**: Structured JSON output with person schema
 - **Error handling**: Graceful fallback with raw response logging
+- **Schema**: Person-centric with persistent identity across sessions
+
+### Why GPT-5 is Required
+
+The system uses GPT-5 instead of smaller models for several critical capabilities:
+
+**Multi-Person Entity Resolution:**
+- **GPT-5-nano limitation**: Could only detect single persons in complex scenarios
+- **GPT-5 advantage**: Correctly identifies multiple people (Person1, Person2, etc.) in the same conversation
+- **Relationship mapping**: GPT-5 can identify and map family/professional relationships between detected persons
+- **Alias handling**: Properly recognizes when "Tim" and "Timmy" refer to the same person
+
+**Enhanced PII Detection:**
+- **SSN/ID detection**: GPT-5 shows superior accuracy in detecting Social Security Numbers and other ID formats
+- **Context awareness**: Better understanding of PII in complex sentence structures
+- **Confidence scoring**: More accurate confidence assessments (typically 0.98-0.99 vs 0.95)
+
+**Security Features:**
+- **Prompt injection resistance**: GPT-5 demonstrates better defense against injection attacks while maintaining PII sanitization
+- **Conservative detection**: Reduces sensitivity when potential security threats are detected
+- **Consistent schema adherence**: More reliable JSON structure output compliance
 
 ### Data Flow
 1. Webhook receives raw text input
-2. LangChain node processes with PII detection prompt
-3. Code node parses AI response and generates session data
-4. Response node returns structured output
-5. PII mappings stored for potential reversal
+2. LangChain node processes with person-centric PII detection prompt
+3. AI assigns sequential Person IDs (Person1, Person2, etc.)
+4. Code node parses AI response and generates person objects
+5. Response node returns structured output with person schema
+6. Person mappings and token mappings stored for potential reversal
 
 ## Contributing
 

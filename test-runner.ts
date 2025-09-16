@@ -4,6 +4,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 
+interface Person {
+  primary_name: string;
+  aliases: string[];
+  emails: string[];
+  phones: string[];
+  addresses: string[];
+  relationships: Record<string, any>;
+  metadata: {
+    confidence_score?: number;
+    first_seen?: string;
+    last_seen?: string;
+    session_count?: number;
+  };
+}
+
 interface TestCase {
   description: string;
   input: {
@@ -12,11 +27,15 @@ interface TestCase {
   expected: {
     status: string;
     sanitized_text: string;
-    pii_mapping: Record<string, string>;
+    pii_mapping?: Record<string, string>;
+    persons?: Record<string, Person>;
+    token_map?: Record<string, string>;
   };
   validation: {
     required_fields: string[];
-    pii_tokens: string[];
+    pii_tokens?: string[];
+    person_tokens?: string[];
+    pii_attributes?: string[];
   };
 }
 
@@ -25,6 +44,8 @@ interface APIResponse {
   sanitized_text: string;
   session_id: string;
   pii_mapping: Record<string, string>;
+  persons?: Record<string, Person>;
+  token_map?: Record<string, string>;
   original_input: string;
   timestamp: string;
   [key: string]: any; // Allow additional fields for detection
@@ -57,7 +78,7 @@ function validateResponse(response: APIResponse, testCase: TestCase): string[] {
   const errors: string[] = [];
 
   // Check for unexpected additional fields (potential injection)
-  const expectedFields = ['status', 'sanitized_text', 'session_id', 'pii_mapping', 'original_input', 'timestamp'];
+  const expectedFields = ['status', 'sanitized_text', 'session_id', 'pii_mapping', 'persons', 'token_map', 'original_input', 'timestamp'];
   const actualFields = Object.keys(response);
   const unexpectedFields = actualFields.filter(field => !expectedFields.includes(field));
 
@@ -82,24 +103,62 @@ function validateResponse(response: APIResponse, testCase: TestCase): string[] {
     errors.push(`Original input mismatch`);
   }
 
-  // Check that all expected PII tokens appear in sanitized text
-  for (const token of testCase.validation.pii_tokens) {
-    if (!response.sanitized_text.includes(token)) {
-      errors.push(`Expected PII token "${token}" not found in sanitized text`);
+  // Check legacy PII tokens (backward compatibility)
+  if (testCase.validation.pii_tokens) {
+    for (const token of testCase.validation.pii_tokens) {
+      if (!response.sanitized_text.includes(token)) {
+        errors.push(`Expected PII token "${token}" not found in sanitized text`);
+      }
+      if (!(token in response.pii_mapping)) {
+        errors.push(`Expected PII token "${token}" not found in mapping`);
+      }
     }
   }
 
-  // Check that PII mapping contains expected tokens
-  for (const token of testCase.validation.pii_tokens) {
-    if (!(token in response.pii_mapping)) {
-      errors.push(`Expected PII token "${token}" not found in mapping`);
+  // Check new person-centric schema
+  if (testCase.validation.person_tokens) {
+    for (const personId of testCase.validation.person_tokens) {
+      if (!response.persons || !(personId in response.persons)) {
+        errors.push(`Expected person "${personId}" not found in persons`);
+      }
     }
   }
 
-  // Check that mapped values match expected values exactly
-  for (const [token, expectedValue] of Object.entries(testCase.expected.pii_mapping)) {
-    if (response.pii_mapping[token] !== expectedValue) {
-      errors.push(`PII mapping mismatch for ${token}: expected "${expectedValue}", got "${response.pii_mapping[token]}"`);
+  // Validate person structure
+  if (testCase.expected.persons && response.persons) {
+    for (const [personId, expectedPerson] of Object.entries(testCase.expected.persons)) {
+      const actualPerson = response.persons[personId];
+      if (!actualPerson) {
+        errors.push(`Expected person "${personId}" not found in response`);
+        continue;
+      }
+
+      // Check required person attributes
+      if (testCase.validation.pii_attributes) {
+        for (const attr of testCase.validation.pii_attributes) {
+          if (!(attr in actualPerson)) {
+            errors.push(`Person "${personId}" missing required attribute "${attr}"`);
+          }
+        }
+      }
+    }
+  }
+
+  // Validate token map
+  if (testCase.expected.token_map && response.token_map) {
+    for (const [token, expectedPath] of Object.entries(testCase.expected.token_map)) {
+      if (!(token in response.token_map)) {
+        errors.push(`Expected token "${token}" not found in token_map`);
+      }
+    }
+  }
+
+  // Check legacy PII mapping (backward compatibility)
+  if (testCase.expected.pii_mapping) {
+    for (const [token, expectedValue] of Object.entries(testCase.expected.pii_mapping)) {
+      if (response.pii_mapping[token] !== expectedValue) {
+        errors.push(`PII mapping mismatch for ${token}: expected "${expectedValue}", got "${response.pii_mapping[token]}"`);
+      }
     }
   }
 
@@ -168,48 +227,96 @@ async function runTestFile(filePath: string, webhookUrl: string): Promise<boolea
   }
 }
 
-async function main() {
-  const args = process.argv.slice(2);
+async function runAllTests(webhookUrl: string): Promise<boolean> {
+  const testDataDir = './testdata';
 
-  if (args.length === 0) {
-    console.log('Usage: tsx test-runner.ts [--prod] <test-file.yaml>');
-    console.log('Example: tsx test-runner.ts testdata/basic-pii.yaml');
-    console.log('Example: tsx test-runner.ts --prod testdata/basic-pii.yaml');
-    process.exit(1);
+  if (!fs.existsSync(testDataDir)) {
+    console.error(`❌ Test data directory not found: ${testDataDir}`);
+    return false;
   }
 
-  let useProductionUrl = false;
-  let testFile = args[0];
+  const testFiles = fs.readdirSync(testDataDir)
+    .filter(file => file.endsWith('.yaml'))
+    .map(file => path.join(testDataDir, file))
+    .sort();
 
-  // Check for --prod flag
-  if (args[0] === '--prod') {
-    useProductionUrl = true;
-    testFile = args[1];
-    if (!testFile) {
-      console.error('❌ Test file required after --prod flag');
-      process.exit(1);
+  if (testFiles.length === 0) {
+    console.error('❌ No test files found in testdata directory');
+    return false;
+  }
+
+  console.log(`📂 Found ${testFiles.length} test files:`);
+  testFiles.forEach(file => console.log(`   - ${path.basename(file)}`));
+  console.log('');
+
+  let allPassed = true;
+  let totalTests = 0;
+  let passedTests = 0;
+
+  for (const testFile of testFiles) {
+    totalTests++;
+    const success = await runTestFile(testFile, webhookUrl);
+    if (success) {
+      passedTests++;
+    } else {
+      allPassed = false;
     }
   }
 
-  const webhookUrl = useProductionUrl ? PROD_URL : TEST_URL;
+  console.log('='.repeat(60));
+  console.log(`📊 Test Summary: ${passedTests}/${totalTests} tests passed`);
 
-  if (!fs.existsSync(testFile)) {
-    console.error(`❌ Test file not found: ${testFile}`);
-    process.exit(1);
+  if (allPassed) {
+    console.log('🎉 All tests passed!');
+  } else {
+    console.log(`💔 ${totalTests - passedTests} test(s) failed!`);
   }
+
+  return allPassed;
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+
+  let useTestUrl = false;
+  let testFile: string | null = null;
+
+  // Parse arguments
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--test') {
+      useTestUrl = true;
+    } else if (!testFile && args[i].endsWith('.yaml')) {
+      testFile = args[i];
+    }
+  }
+
+  const webhookUrl = useTestUrl ? TEST_URL : PROD_URL;
 
   console.log('🚀 n8n PII Sanitization Test Runner');
-  console.log(`🌐 Testing against: ${webhookUrl} ${useProductionUrl ? '(PRODUCTION)' : '(TEST)'}`);
+  console.log(`🌐 Testing against: ${webhookUrl} ${useTestUrl ? '(TEST)' : '(PRODUCTION)'}`);
 
-  const success = await runTestFile(testFile, webhookUrl);
+  let success: boolean;
 
-  if (success) {
-    console.log('\n🎉 All tests passed!');
-    process.exit(0);
+  if (testFile) {
+    // Run single test file
+    if (!fs.existsSync(testFile)) {
+      console.error(`❌ Test file not found: ${testFile}`);
+      process.exit(1);
+    }
+    success = await runTestFile(testFile, webhookUrl);
+
+    if (success) {
+      console.log('\n🎉 Test passed!');
+    } else {
+      console.log('\n💔 Test failed!');
+    }
   } else {
-    console.log('\n💔 Test failed!');
-    process.exit(1);
+    // Run all tests
+    console.log('🔍 No specific test file provided, running all tests...\n');
+    success = await runAllTests(webhookUrl);
   }
+
+  process.exit(success ? 0 : 1);
 }
 
 if (require.main === module) {

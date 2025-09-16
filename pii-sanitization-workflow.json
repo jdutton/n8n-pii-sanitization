@@ -20,7 +20,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Parse the AI response and structure the data\nconst aiResponse = $input.first().json.message.content;\n\ntry {\n  // Parse the JSON response from OpenAI\n  const piiData = JSON.parse(aiResponse);\n  // Generate a unique session ID for this conversation\n  const sessionId = $workflow.id + '_' + Date.now();\n  //console.log(\"DEBUG sessionId=\" + sessionId + \", piiData=\" + piiData);\n  \n  // Store the PII mapping in workflow memory\n  //$workflow.piiMappings = $workflow.piiMappings || {};\n  //$workflow.piiMappings[sessionId] = piiData.pii_mapping;\n  \n  return {\n    json: {\n      sessionId: sessionId,\n      sanitized_text: piiData.sanitized_text,\n      pii_mapping: piiData.pii_mapping,\n      original_input: $('Webhook').first().json.body.message,\n      timestamp: new Date().toISOString()\n    }\n  };\n} catch (error) {\n  console.log(\"ERROR: \" + error);\n  return {\n    json: {\n      error: 'Failed to parse AI response',\n      raw_response: aiResponse,\n      original_input: $('Webhook').first().json.body.message\n    }\n  };\n}"
+        "jsCode": "// Parse the AI response and structure the data with new person schema\nconst aiResponse = $input.first().json.message.content;\n\ntry {\n  // Parse the JSON response from OpenAI\n  const piiData = JSON.parse(aiResponse);\n  // Generate a unique session ID for this conversation\n  const sessionId = $workflow.id + '_' + Date.now();\n  \n  console.log('DEBUG: Parsed AI response:', JSON.stringify(piiData, null, 2));\n  \n  // Check if AI returned new person schema or old schema\n  if (piiData.persons && piiData.token_map) {\n    // New person schema - create backward-compatible pii_mapping\n    const legacyMapping = {};\n    Object.keys(piiData.token_map).forEach(token => {\n      const personId = token.match(/\\[([^\\]:]+)/)?.[1];\n      const fieldPath = piiData.token_map[token];\n      if (personId && piiData.persons[personId]) {\n        const person = piiData.persons[personId];\n        if (fieldPath === 'primary_name') {\n          legacyMapping[token] = person.primary_name;\n        } else if (fieldPath.startsWith('emails[')) {\n          const index = parseInt(fieldPath.match(/\\[(\\d+)\\]/)?.[1] || '0');\n          legacyMapping[token] = person.emails[index] || '';\n        } else if (fieldPath.startsWith('phones[')) {\n          const index = parseInt(fieldPath.match(/\\[(\\d+)\\]/)?.[1] || '0');\n          legacyMapping[token] = person.phones[index] || '';\n        } else if (fieldPath.startsWith('addresses[')) {\n          const index = parseInt(fieldPath.match(/\\[(\\d+)\\]/)?.[1] || '0');\n          legacyMapping[token] = person.addresses[index] || '';\n        } else if (fieldPath.startsWith('ids[')) {\n          const index = parseInt(fieldPath.match(/\\[(\\d+)\\]/)?.[1] || '0');\n          legacyMapping[token] = person.ids[index] || '';\n        }\n      }\n    });\n    \n    return {\n      json: {\n        sessionId: sessionId,\n        sanitized_text: piiData.sanitized_text,\n        persons: piiData.persons,\n        token_map: piiData.token_map,\n        pii_mapping: legacyMapping,\n        original_input: $('Webhook').first().json.body.message,\n        timestamp: new Date().toISOString()\n      }\n    };\n  } else if (piiData.pii_mapping) {\n    // Old schema - pass through as-is for backward compatibility\n    console.log('DEBUG: Using legacy schema compatibility mode');\n    return {\n      json: {\n        sessionId: sessionId,\n        sanitized_text: piiData.sanitized_text,\n        persons: {},\n        token_map: {},\n        pii_mapping: piiData.pii_mapping,\n        original_input: $('Webhook').first().json.body.message,\n        timestamp: new Date().toISOString()\n      }\n    };\n  } else {\n    // Unexpected format\n    console.log('ERROR: Unexpected AI response format:', piiData);\n    throw new Error('AI response missing expected fields');\n  }\n} catch (error) {\n  console.log(\"ERROR: \" + error);\n  console.log(\"RAW AI RESPONSE: \" + aiResponse);\n  return {\n    json: {\n      error: 'Failed to parse AI response',\n      raw_response: aiResponse,\n      original_input: $('Webhook').first().json.body.message\n    }\n  };\n}"
       },
       "id": "3c3c3c3c-3333-3333-3333-333333333333",
       "name": "Process PII Data",
@@ -38,6 +38,8 @@
           "status": "success",
           "sanitized_text": "={{ $json.sanitized_text }}",
           "session_id": "={{ $json.sessionId }}",
+          "persons": "={{ $json.persons }}",
+          "token_map": "={{ $json.token_map }}",
           "pii_mapping": "={{ $json.pii_mapping }}",
           "original_input": "={{ $json.original_input }}",
           "timestamp": "={{ $json.timestamp }}"
@@ -57,14 +59,14 @@
       "parameters": {
         "modelId": {
           "__rl": true,
-          "value": "gpt-5-nano",
+          "value": "gpt-5",
           "mode": "list",
-          "cachedResultName": "GPT-5-NANO"
+          "cachedResultName": "GPT-5"
         },
         "messages": {
           "values": [
             {
-              "content": "You are a PII detection and tokenization system.\n\nExtract PII from the input text and replace with tokens:\n- Names: [Person1], [Person2], etc.\n- Addresses: [Address1], [Address2], etc.\n- Phone numbers: [Phone1], [Phone2], etc.\n- Email addresses: [Email1], [Email2], etc.\n- SSN/ID numbers: [ID1], [ID2], etc.\n\nReturn ONLY valid JSON format:\n{\n  \"sanitized_text\": \"text with PII replaced by tokens\",\n  \"pii_mapping\": {\n    \"[Person1]\": \"actual name\",\n    \"[Address1]\": \"actual address\"\n  }\n}",
+              "content": "You are a PII detection and tokenization system that creates persistent person identities.\n\nEXTREMELY IMPORTANT: Always use the EXACT format shown below.\n\nFor each person detected:\n1. Assign a simple sequential ID: Person1 for first person, Person2 for second, etc.\n2. Replace ALL PII with person-specific tokens:\n   - Names: [Person1]\n   - Emails: [Person1:email1], [Person1:email2]\n   - Phones: [Person1:phone1]\n   - Addresses: [Person1:address1]\n   - IDs/SSNs: [Person1:id1]\n\nReturn ONLY this EXACT JSON structure:\n{\n  \"sanitized_text\": \"Hi, I am [Person1], my email is [Person1:email1] and I live at [Person1:address1]. My phone is [Person1:phone1].\",\n  \"persons\": {\n    \"Person1\": {\n      \"primary_name\": \"actual name\",\n      \"aliases\": [],\n      \"emails\": [\"actual@email.com\"],\n      \"phones\": [\"actual-phone\"],\n      \"addresses\": [\"actual address\"],\n      \"relationships\": {},\n      \"metadata\": {\n        \"confidence_score\": 0.95,\n        \"first_seen\": \"2025-09-16T22:00:00.000Z\",\n        \"last_seen\": \"2025-09-16T22:00:00.000Z\",\n        \"session_count\": 1\n      }\n    }\n  },\n  \"token_map\": {\n    \"[Person1]\": \"primary_name\",\n    \"[Person1:email1]\": \"emails[0]\",\n    \"[Person1:phone1]\": \"phones[0]\",\n    \"[Person1:address1]\": \"addresses[0]\"\n  }\n}",
               "role": "system"
             },
             {

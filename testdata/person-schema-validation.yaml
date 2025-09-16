@@ -1,0 +1,42 @@
+description: "Test the new person-centric schema with simplified persistent identifiers"
+
+input:
+  message: "Hi, I am Jane Doe, my email is jane.doe@company.com and I live at 456 Oak Street, Boston, MA 02101. My phone is 617-555-9876."
+
+expected:
+  status: "success"
+  sanitized_text: "Hi, I am [Person1], my email is [Person1:email1] and I live at [Person1:address1]. My phone is [Person1:phone1]."
+  persons:
+    Person1:
+      primary_name: "Jane Doe"
+      aliases: []
+      emails: ["jane.doe@company.com"]
+      phones: ["617-555-9876"]
+      addresses: ["456 Oak Street, Boston, MA 02101"]
+      relationships: {}
+      metadata:
+        confidence_score: 0.95
+        session_count: 1
+  token_map:
+    "[Person1]": "primary_name"
+    "[Person1:email1]": "emails[0]"
+    "[Person1:address1]": "addresses[0]"
+    "[Person1:phone1]": "phones[0]"
+
+validation:
+  required_fields:
+    - status
+    - sanitized_text
+    - session_id
+    - persons
+    - token_map
+    - pii_mapping
+    - original_input
+    - timestamp
+  person_tokens:
+    - "Person1"
+  pii_attributes:
+    - "primary_name"
+    - "emails"
+    - "phones"
+    - "addresses"
