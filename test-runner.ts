@@ -19,14 +19,17 @@ interface Person {
   };
 }
 
-interface TestCase {
-  description: string;
+interface ConversationTurn {
+  turn: number;
   input: {
     message: string;
+    session_id?: string;
   };
   expected: {
     status: string;
-    sanitized_text: string;
+    sanitized_text?: string;
+    chat_response_contains?: string[];
+    conversation_turn: number;
     pii_mapping?: Record<string, string>;
     persons?: Record<string, Person>;
     token_map?: Record<string, string>;
@@ -36,7 +39,31 @@ interface TestCase {
     pii_tokens?: string[];
     person_tokens?: string[];
     pii_attributes?: string[];
+    conversation_continuity?: boolean;
+    person_persistence?: boolean;
   };
+}
+
+interface TestCase {
+  description: string;
+  input?: {
+    message: string;
+  };
+  expected?: {
+    status: string;
+    sanitized_text: string;
+    pii_mapping?: Record<string, string>;
+    persons?: Record<string, Person>;
+    token_map?: Record<string, string>;
+  };
+  validation?: {
+    required_fields: string[];
+    pii_tokens?: string[];
+    person_tokens?: string[];
+    pii_attributes?: string[];
+  };
+  // New: Support for multi-turn conversations
+  conversation_turns?: ConversationTurn[];
 }
 
 interface APIResponse {
@@ -48,6 +75,10 @@ interface APIResponse {
   token_map?: Record<string, string>;
   original_input: string;
   timestamp: string;
+  // New chat fields
+  chat_response?: string;
+  conversation_turn?: number;
+  conversation_length?: number;
   [key: string]: any; // Allow additional fields for detection
 }
 
@@ -77,8 +108,8 @@ async function sendRequest(input: TestCase['input'], webhookUrl: string): Promis
 function validateResponse(response: APIResponse, testCase: TestCase): string[] {
   const errors: string[] = [];
 
-  // Check for unexpected additional fields (potential injection)
-  const expectedFields = ['status', 'sanitized_text', 'session_id', 'pii_mapping', 'persons', 'token_map', 'original_input', 'timestamp'];
+  // Check for unexpected additional fields (potential injection) - updated for chat functionality
+  const expectedFields = ['status', 'sanitized_text', 'session_id', 'pii_mapping', 'persons', 'token_map', 'original_input', 'timestamp', 'chat_response', 'conversation_turn', 'conversation_length'];
   const actualFields = Object.keys(response);
   const unexpectedFields = actualFields.filter(field => !expectedFields.includes(field));
 
@@ -162,9 +193,15 @@ function validateResponse(response: APIResponse, testCase: TestCase): string[] {
     }
   }
 
-  // Check that sanitized text matches expected (strict comparison)
-  if (response.sanitized_text !== testCase.expected.sanitized_text) {
-    errors.push(`Sanitized text mismatch:\n  Expected: "${testCase.expected.sanitized_text}"\n  Actual:   "${response.sanitized_text}"`);
+  // Check that sanitized text matches expected (with chat prefix tolerance)
+  if (testCase.expected?.sanitized_text && response.sanitized_text) {
+    const expectedSanitized = testCase.expected.sanitized_text;
+    const actualSanitized = response.sanitized_text;
+    // Allow for "Current user message: " prefix in chat mode
+    const normalizedActual = actualSanitized.replace(/^Current user message: /, '');
+    if (normalizedActual !== expectedSanitized) {
+      errors.push(`Sanitized text mismatch:\n  Expected: "${expectedSanitized}"\n  Actual:   "${normalizedActual}"`);
+    }
   }
 
   // Check timestamp format (ISO 8601)
@@ -172,8 +209,8 @@ function validateResponse(response: APIResponse, testCase: TestCase): string[] {
     errors.push(`Invalid timestamp format: ${response.timestamp}`);
   }
 
-  // Check session_id format
-  if (response.session_id && !response.session_id.match(/^\d+_\d+$/)) {
+  // Check session_id format (allow chat_ prefix for chat mode)
+  if (response.session_id && !response.session_id.match(/^(chat_)?\d+_\w+$/)) {
     errors.push(`Invalid session_id format: ${response.session_id}`);
   }
 
@@ -190,6 +227,194 @@ async function runTestFile(filePath: string, webhookUrl: string): Promise<boolea
 
     console.log(`📝 ${path.basename(filePath, '.yaml')}`);
     console.log(`📄 ${testCase.description}`);
+
+    console.log('\n📤 Sending request...');
+    const response = await sendRequest(testCase.input, webhookUrl);
+
+    console.log('📥 Response received');
+    console.log('🔍 Validating response...');
+
+    const errors = validateResponse(response, testCase);
+
+    if (errors.length === 0) {
+      console.log('✅ Test PASSED');
+      console.log(`   Session ID: ${response.session_id}`);
+      console.log(`   PII tokens detected: ${Object.keys(response.pii_mapping).length}`);
+      return true;
+    } else {
+      console.log('❌ Test FAILED');
+      console.log('   Validation errors:');
+      for (const error of errors) {
+        console.log(`   - ${error}`);
+      }
+      console.log('\n   Expected response:');
+      const expectedWithOriginalInput = {
+        ...testCase.expected,
+        original_input: testCase.input.message
+      };
+      console.log('   ', JSON.stringify(expectedWithOriginalInput, null, 2).replace(/\n/g, '\n   '));
+      console.log('\n   Actual response:');
+      console.log('   ', JSON.stringify(response, null, 2).replace(/\n/g, '\n   '));
+      return false;
+    }
+  } catch (error) {
+    console.log('💥 Test ERROR');
+    console.log(`   ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+function validateConversationTurn(response: APIResponse, turn: ConversationTurn, previousSessionId?: string): string[] {
+  const errors: string[] = [];
+
+  // Validation for conversation turns
+
+  // Check required fields for this turn
+  if (turn.validation?.required_fields) {
+    for (const field of turn.validation.required_fields) {
+      if (!(field in response)) {
+        errors.push(`Turn ${turn.turn}: Missing required field: ${field}`);
+      }
+    }
+  }
+
+  // Check status
+  if (turn.expected?.status && response.status !== turn.expected.status) {
+    errors.push(`Turn ${turn.turn}: Expected status "${turn.expected.status}", got "${response.status}"`);
+  }
+
+  // Check conversation turn number
+  if (turn.expected?.conversation_turn && response.conversation_turn !== turn.expected.conversation_turn) {
+    errors.push(`Turn ${turn.turn}: Expected conversation_turn ${turn.expected.conversation_turn}, got ${response.conversation_turn}`);
+  }
+
+  // Check session continuity (same session ID across turns)
+  if (turn.validation?.conversation_continuity && previousSessionId && response.session_id !== previousSessionId) {
+    errors.push(`Turn ${turn.turn}: Session ID changed, breaking conversation continuity`);
+  }
+
+  // Check chat response contains expected content
+  if (turn.expected?.chat_response_contains) {
+    for (const expectedContent of turn.expected.chat_response_contains) {
+      if (!response.chat_response?.includes(expectedContent)) {
+        errors.push(`Turn ${turn.turn}: Chat response missing expected content: "${expectedContent}"`);
+      }
+    }
+  }
+
+  // Check person persistence across turns
+  if (turn.validation?.person_persistence && turn.expected?.persons) {
+    for (const [personId, expectedPerson] of Object.entries(turn.expected.persons)) {
+      const actualPerson = response.persons?.[personId];
+      if (!actualPerson) {
+        errors.push(`Turn ${turn.turn}: Expected person "${personId}" not found in response`);
+        continue;
+      }
+
+      // Verify accumulated information
+      if (expectedPerson.emails && actualPerson.emails && actualPerson.emails.length < expectedPerson.emails.length) {
+        errors.push(`Turn ${turn.turn}: Person "${personId}" missing expected emails from previous turns`);
+      }
+      if (expectedPerson.phones && actualPerson.phones && actualPerson.phones.length < expectedPerson.phones.length) {
+        errors.push(`Turn ${turn.turn}: Person "${personId}" missing expected phones from previous turns`);
+      }
+    }
+  }
+
+  return errors;
+}
+
+async function runConversationTest(testCase: TestCase, webhookUrl: string): Promise<boolean> {
+  console.log(`\n🧪 Running conversation test: ${testCase.description}`);
+  console.log('='.repeat(50));
+
+  if (!testCase.conversation_turns || testCase.conversation_turns.length === 0) {
+    console.log('❌ No conversation turns defined');
+    return false;
+  }
+
+  let sessionId: string | undefined;
+  let allTurnsPassed = true;
+
+  for (const turn of testCase.conversation_turns) {
+    console.log(`\n🔄 Turn ${turn.turn}:`);
+    console.log(`📤 Message: "${turn.input.message}"`);
+
+    // Prepare input with session ID from previous turn
+    const inputWithSession = {
+      message: turn.input.message,
+      ...(sessionId && { session_id: sessionId })
+    };
+
+
+    try {
+      const response = await sendRequest(inputWithSession, webhookUrl);
+
+      // Store session ID for next turn
+      if (!sessionId) {
+        sessionId = response.session_id;
+        console.log(`📝 Session started: ${sessionId}`);
+      }
+
+      console.log(`📥 Response received (Turn ${response.conversation_turn})`);
+      console.log(`💬 Chat: "${response.chat_response}"`);
+
+      // Validate this turn
+      const errors = validateConversationTurn(response, turn, sessionId);
+
+      if (!Array.isArray(errors)) {
+        console.log(`💥 Turn ${turn.turn} ERROR`);
+        console.log(`   validateConversationTurn returned non-array: ${JSON.stringify(errors)}`);
+        allTurnsPassed = false;
+      } else if (errors.length === 0) {
+        console.log(`✅ Turn ${turn.turn} PASSED`);
+      } else {
+        console.log(`❌ Turn ${turn.turn} FAILED`);
+        console.log('   Validation errors:');
+        for (const error of errors) {
+          console.log(`   - ${error}`);
+        }
+        allTurnsPassed = false;
+      }
+
+    } catch (error) {
+      console.log(`💥 Turn ${turn.turn} ERROR`);
+      console.log(`   ${error instanceof Error ? error.message : String(error)}`);
+      allTurnsPassed = false;
+    }
+  }
+
+  if (allTurnsPassed) {
+    console.log(`\n🎉 All ${testCase.conversation_turns.length} turns passed!`);
+  } else {
+    console.log(`\n💔 Some turns failed in conversation test`);
+  }
+
+  return allTurnsPassed;
+}
+
+// Enhanced runTestFile to handle both single tests and conversation tests
+async function runEnhancedTestFile(filePath: string, webhookUrl: string): Promise<boolean> {
+  console.log(`\n🧪 Running test: ${path.basename(filePath)}`);
+  console.log('='.repeat(50));
+
+  try {
+    const fileContent = fs.readFileSync(filePath, 'utf8');
+    const testCase = yaml.load(fileContent) as TestCase;
+
+    console.log(`📝 ${path.basename(filePath, '.yaml')}`);
+    console.log(`📄 ${testCase.description}`);
+
+    // Check if this is a conversation test
+    if (testCase.conversation_turns && testCase.conversation_turns.length > 0) {
+      return await runConversationTest(testCase, webhookUrl);
+    }
+
+    // Fall back to original single-request test
+    if (!testCase.input) {
+      console.log('❌ No input or conversation_turns defined');
+      return false;
+    }
 
     console.log('\n📤 Sending request...');
     const response = await sendRequest(testCase.input, webhookUrl);
@@ -255,7 +480,7 @@ async function runAllTests(webhookUrl: string): Promise<boolean> {
 
   for (const testFile of testFiles) {
     totalTests++;
-    const success = await runTestFile(testFile, webhookUrl);
+    const success = await runEnhancedTestFile(testFile, webhookUrl);
     if (success) {
       passedTests++;
     } else {
@@ -303,7 +528,7 @@ async function main() {
       console.error(`❌ Test file not found: ${testFile}`);
       process.exit(1);
     }
-    success = await runTestFile(testFile, webhookUrl);
+    success = await runEnhancedTestFile(testFile, webhookUrl);
 
     if (success) {
       console.log('\n🎉 Test passed!');

@@ -42,40 +42,60 @@ npx tsx test-runner.ts testdata/basic-pii.yaml
 
 # Test specific scenarios against test endpoint
 npx tsx test-runner.ts --test testdata/basic-pii.yaml
+
+# Test multi-turn conversation scenarios
+npx tsx test-runner.ts testdata/chat-conversation.yaml
 ```
+
+#### Test Types
+- **Single-request tests**: Basic PII detection and tokenization (e.g., `basic-pii.yaml`)
+- **Conversation tests**: Multi-turn chat with session continuity (e.g., `chat-conversation.yaml`)
+- **Person schema tests**: Validation of person-centric data structure (e.g., `person-schema-validation.yaml`)
+
+The test runner automatically detects conversation tests by the presence of `conversation_turns` in the test file and handles session management across multiple turns.
 
 ## Architecture Overview
 
-This is an n8n-based agentic workflow for PII (Personally Identifiable Information) detection and tokenization. The system demonstrates production-ready AI workflows that automatically detect and sanitize sensitive data before processing.
+This is an n8n-based agentic workflow for conversational chat with PII (Personally Identifiable Information) protection. The system provides dual capabilities: natural conversation AND automatic PII detection/tokenization across multi-turn conversations with memory-based session management.
 
 ### Core Workflow Components
 
 1. **Webhook Trigger** (`n8n-nodes-base.webhook`)
    - Receives POST requests at `/webhook/chat` (production) or `/webhook-test/chat` (test)
-   - Accepts JSON payload with `message` field
+   - Accepts JSON payload with `message` field and optional `session_id` for conversation continuity
 
-2. **LangChain OpenAI Node** (`@n8n/n8n-nodes-langchain.openAi`)
-   - Uses GPT-5 model with temperature 0.1
-   - Processes person-centric PII detection with structured JSON output
-   - Assigns sequential Person IDs (Person1, Person2, etc.)
+2. **Session Manager Node** (`n8n-nodes-base.code`)
+   - Manages conversation history using global.conversations memory storage
+   - Retrieves existing conversation context and person data
+   - Builds conversation history for AI context (last 10 messages)
+   - Generates session IDs for new conversations
+
+3. **LangChain OpenAI Node** (`@n8n/n8n-nodes-langchain.openAi`)
+   - Uses GPT-5 model with temperature 0.1 for dual-purpose processing
+   - Provides natural conversational responses using person tokens
+   - Simultaneously detects and tokenizes PII in user messages
+   - Maintains conversation context across turns
    - Requires OpenAI API credentials configuration
 
-3. **Code Node** (`n8n-nodes-base.code`)
-   - Parses AI response and generates person objects with structured schema
-   - Creates unique session IDs for PII mapping tracking
-   - Maintains backward compatibility with legacy token format
-   - Handles error scenarios with graceful fallback
+4. **Process PII Data Node** (`n8n-nodes-base.code`)
+   - Parses AI response containing both chat response and PII analysis
+   - Merges new person data with existing conversation persons
+   - Updates conversation history with sanitized messages
+   - Manages session memory with automatic cleanup (keeps last 100 sessions)
+   - Creates legacy PII mappings for backward compatibility
 
-4. **Response Node** (`n8n-nodes-base.respondToWebhook`)
-   - Returns structured JSON with person schema, token mappings, and PII mappings
-   - Includes session ID, timestamp, and original input
+5. **Response Node** (`n8n-nodes-base.respondToWebhook`)
+   - Returns structured JSON with chat response, person data, and conversation metadata
+   - Includes conversation turn number, session ID, timestamp, and PII mappings
 
 ### Data Flow Architecture
 
 ```
-Webhook Input → AI Person Detection → Person Processing → JSON Response
-     ↓              ↓                     ↓                 ↓
-[raw text]  → [detect & assign IDs] → [build persons] → [sanitized + persons]
+Webhook Input → Session Lookup → AI Chat+PII → Memory Update → JSON Response
+     ↓             ↓              ↓              ↓             ↓
+[user message] → [get history] → [chat+detect] → [store data] → [chat+sanitized]
+     ↓             ↓              ↓              ↓             ↓
+[session_id]   → [persons]    → [tokens]     → [persist]   → [conversation_turn]
 ```
 
 ### Person-Centric Token Patterns
@@ -109,16 +129,69 @@ Each person gets a structured object with:
 - Test URL: `http://localhost:5678/webhook-test/chat`
 - Method: POST
 - Content-Type: application/json
-- Payload: `{"message": "text containing PII"}`
+
+#### Request Payloads
+```json
+// New conversation
+{
+  "message": "Hi, I'm John Smith and I need help with my account"
+}
+
+// Continue existing conversation
+{
+  "message": "I also need to update my phone number",
+  "session_id": "chat_1726610234567_abcd1234"
+}
+```
+
+#### Response Format
+```json
+{
+  "status": "success",
+  "session_id": "chat_1726610234567_abcd1234",
+  "chat_response": "Hello [Person1]! I'd be happy to help you with your account.",
+  "conversation_turn": 1,
+  "conversation_length": 2,
+  "sanitized_text": "Hi, I'm [Person1] and I need help with my account",
+  "persons": {
+    "Person1": {
+      "primary_name": "John Smith",
+      "emails": [],
+      "phones": [],
+      "addresses": [],
+      "aliases": [],
+      "relationships": {},
+      "metadata": {
+        "confidence_score": 0.95,
+        "first_seen": "2024-09-16T22:00:00.000Z",
+        "session_count": 1
+      }
+    }
+  },
+  "token_map": {
+    "[Person1]": "primary_name"
+  },
+  "pii_mapping": {
+    "[Person1]": "John Smith"
+  },
+  "original_input": "Hi, I'm John Smith and I need help with my account",
+  "timestamp": "2024-09-16T22:00:00.000Z"
+}
+```
 
 ## Development Notes
 
 - The workflow uses n8n's visual workflow builder - no traditional build/lint commands
 - All logic is contained within the n8n workflow nodes
 - Testing requires the n8n instance to be running and workflow activated
-- Person objects are generated per session with foundation for cross-session persistence
-- Includes both person schema and backward-compatible PII mapping
-- Error handling preserves original input and provides debugging information
+- **Memory-based session storage**: Conversations stored in global.conversations (POC phase)
+- **Session management**: Automatic cleanup keeps last 100 active sessions
+- **Dual-purpose AI**: Single model handles both natural conversation and PII detection
+- **Person persistence**: Person objects accumulate data across conversation turns
+- **Conversation context**: Last 10 messages included in AI context for continuity
+- **Backward compatibility**: Maintains legacy PII mapping format alongside new person schema
+- **Error handling**: Preserves original input and provides debugging information
+- **Testing capabilities**: Supports both single-request and multi-turn conversation testing
 - AI model may show inconsistent behavior between runs due to temperature and non-deterministic nature
 
 ## Documentation Standards
