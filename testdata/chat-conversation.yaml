@@ -1,0 +1,82 @@
+description: "Test conversational chat with PII detection and session management"
+
+# This test simulates a multi-turn conversation
+conversation_turns:
+  - turn: 1
+    input:
+      message: "Hi, I'm John Smith and I need help with my account. My email is john.smith@company.com"
+    expected:
+      status: "success"
+      chat_response_contains: ["[Person1]", "help", "account"]
+      conversation_turn: 1
+      persons:
+        Person1:
+          primary_name: "John Smith"
+          emails: ["john.smith@company.com"]
+    validation:
+      required_fields:
+        - status
+        - session_id
+        - chat_response
+        - conversation_turn
+        - sanitized_text
+        - persons
+        - pii_mapping
+      person_tokens:
+        - "Person1"
+
+  - turn: 2
+    input:
+      # Use session_id from previous response
+      session_id: "{{ previous_session_id }}"
+      message: "I also need to update my phone number to 555-123-4567"
+    expected:
+      status: "success"
+      chat_response_contains: ["[Person1]", "phone", "update"]
+      conversation_turn: 2
+      persons:
+        Person1:
+          primary_name: "John Smith"
+          emails: ["john.smith@company.com"]
+          phones: ["555-123-4567"]
+    validation:
+      required_fields:
+        - status
+        - session_id
+        - chat_response
+        - conversation_turn
+        - conversation_length
+        - sanitized_text
+        - persons
+        - pii_mapping
+      person_tokens:
+        - "Person1"
+      conversation_continuity: true
+
+  - turn: 3
+    input:
+      session_id: "{{ previous_session_id }}"
+      message: "What information do you have on file for me?"
+    expected:
+      status: "success"
+      chat_response_contains: ["[Person1]", "information", "file"]
+      conversation_turn: 3
+      # Should remember Person1 from previous turns
+      persons:
+        Person1:
+          primary_name: "John Smith"
+          emails: ["john.smith@company.com"]
+          phones: ["555-123-4567"]
+    validation:
+      required_fields:
+        - status
+        - session_id
+        - chat_response
+        - conversation_turn
+        - conversation_length
+        - persons
+      person_tokens:
+        - "Person1"
+      conversation_continuity: true
+      # Should have accumulated information across turns
+      person_persistence: true
